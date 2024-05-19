@@ -46,7 +46,7 @@
 #include <ValueSmoother.hpp>
 
 #include "uris.h"
-
+#include "log.h"
 #if AIDADSP_COMMERCIAL
     #define TWINCLASSIC 0
     #define LEAD 1
@@ -82,7 +82,7 @@
 /**********************************************************************************************************************************************************/
 
 typedef enum {
-    IN, OUT_1,
+    IN_1, OUT_1,
 #if AIDADSP_MODEL_LOADER
     PLUGIN_CONTROL, PLUGIN_NOTIFY,
 #else
@@ -237,6 +237,7 @@ public:
     float *eq_bypass;
     float *input_size;
     float *enabled;
+    float filename_size ;
 
     // to be used for reporting input_size to GUI (0 for error/unloaded, otherwise matching input_size)
     int last_input_size;

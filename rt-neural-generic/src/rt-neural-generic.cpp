@@ -147,6 +147,7 @@ void RtNeuralGeneric::applyToneControls(float *out, const float *in, LV2_Handle 
  */
 void RtNeuralGeneric::applyModel(DynamicModel* model, float* out, uint32_t n_samples)
 {
+    
     const bool input_skip = model->input_skip;
     const float input_gain = model->input_gain;
     const float output_gain = model->output_gain;
@@ -237,6 +238,7 @@ void RtNeuralGeneric::applyModel(DynamicModel* model, float* out, uint32_t n_sam
         },
         model->variant
     );
+    
 }
 
 /**********************************************************************************************************************************************************/
@@ -244,13 +246,8 @@ void RtNeuralGeneric::applyModel(DynamicModel* model, float* out, uint32_t n_sam
 LV2_Handle RtNeuralGeneric::instantiate(const LV2_Descriptor* descriptor, double samplerate, const char* bundle_path, const LV2_Feature* const* features)
 {
     RtNeuralGeneric *self = new RtNeuralGeneric();
-
+    LOGD("total ports: %d", PLUGIN_PORT_COUNT);
     self->samplerate = samplerate;
-
-#if AIDADSP_COMMERCIAL && (AIDADSP_MODEL_DEFINE != SHOWCASE)
-    self->run_count = 0;
-    mod_license_check(features, PLUGIN_URI);
-#endif
 
     // Get host features
     for (int i = 0; features[i]; ++i) {
@@ -314,6 +311,7 @@ LV2_Handle RtNeuralGeneric::instantiate(const LV2_Descriptor* descriptor, double
     self->presence = new Biquad(bq_type_highshelf, PRESENCE_FREQ / samplerate, PRESENCE_Q, self->presence_boost_db_old);
 
     self->last_input_size = 0;
+    self->input_size = (float *) malloc (sizeof (float));
 
     self->loading = true;
 
@@ -376,10 +374,10 @@ void RtNeuralGeneric::deactivate(LV2_Handle instance)
 void RtNeuralGeneric::connect_port(LV2_Handle instance, uint32_t port, void *data)
 {
     RtNeuralGeneric *self = (RtNeuralGeneric*) instance;
-
+    //~ LOGD("connect port %d", port);
     switch((ports_t)port)
     {
-        case IN:
+        case IN_1:
             self->in = (float*) data;
             break;
         case OUT_1:
@@ -471,16 +469,33 @@ void RtNeuralGeneric::connect_port(LV2_Handle instance, uint32_t port, void *dat
             break;
 #endif
         case INPUT_SIZE:
-            self->input_size = (float*) data;
+            //~ self->input_size = (float*) data;
             break;
         case PLUGIN_ENABLED:
             self->enabled = (float*) data;
+            break;
+        case 99:
+            self->filename_size = * (float *) data ;
+            LOGD("got filename size: %f", self->filename_size);
+            *self->input_size = self->filename_size;
+            break ;
+        case 100:
+            self->loading = true ;
+            #ifdef AIDADSP_MODEL_LOADER
+            LOGD("AIDADSP_MODEL_LOADER");
+            #endif
+            char * filename = (char *) data ;
+            LOGD("got filename %s of size %f", filename, self->filename_size);
+
+            self->model = self->loadModelFromPath (&self->logger, filename, (int *)&self->filename_size,0.0f,0.0f);
+            self->loading = false ;
             break;
     }
 }
 
 /**********************************************************************************************************************************************************/
 
+#define ___REACHED_HERE___ HERE
 void RtNeuralGeneric::run(LV2_Handle instance, uint32_t n_samples)
 {
     RtNeuralGeneric *self = (RtNeuralGeneric*) instance;
@@ -511,110 +526,23 @@ void RtNeuralGeneric::run(LV2_Handle instance, uint32_t n_samples)
 #endif
 
     self->preGain.setTargetValue(pregain);
+    //~ LOGD("%f %f", in_lpf_pc, self->in_lpf_pc_old);
     if (in_lpf_pc != self->in_lpf_pc_old) { /* Update filter coeffs */
         self->in_lpf->setBiquad(bq_type_lowpass, MAP(in_lpf_pc, 0.0f, 100.0f, INLPF_MAX_CO, INLPF_MIN_CO), 0.707f, 0.0f);
         self->in_lpf_pc_old = in_lpf_pc;
     }
     *self->input_size = self->last_input_size;
-
-#if AIDADSP_COMMERCIAL && (AIDADSP_MODEL_DEFINE != SHOWCASE)
-    self->run_count = mod_license_run_begin(self->run_count, n_samples);
-#endif
-
-#if AIDADSP_MODEL_LOADER
-#ifdef PROCESS_ATOM_MESSAGES
-    /*++++++++ READ ATOM MESSAGES ++++++++*/
-    // Set up forge to write directly to notify output port.
-    const uint32_t notify_capacity = self->notify_port->atom.size;
-    lv2_atom_forge_set_buffer(&self->forge,
-            (uint8_t*)self->notify_port,
-            notify_capacity);
-
-    // Start a sequence in the notify output port.
-    lv2_atom_forge_sequence_head(&self->forge, &self->notify_frame, 0);
-
-    // Read incoming events
-    LV2_ATOM_SEQUENCE_FOREACH(self->control_port, ev) {
-        if (lv2_atom_forge_is_object_type(&self->forge, ev->body.type)) {
-            const LV2_Atom_Object* obj = (const LV2_Atom_Object*)&ev->body;
-            if (obj->body.otype == uris->patch_Set) {
-                // Get the property and value of the set message
-                const LV2_Atom* property = NULL;
-                const LV2_Atom* value    = NULL;
-                lv2_atom_object_get(obj,
-                        uris->patch_property, &property,
-                        uris->patch_value,    &value,
-                        0);
-                if (!property) {
-                    lv2_log_trace(&self->logger,
-                        "patch:Set message with no property\n");
-                    continue;
-                } else if (property->type != uris->atom_URID) {
-                    lv2_log_trace(&self->logger,
-                        "patch:Set property is not a URID\n");
-                    continue;
-                } else if (((const LV2_Atom_URID*)property)->body != uris->json) {
-                    lv2_log_trace(&self->logger,
-                        "patch:Set property body is not json\n");
-                    continue;
-                }
-                if (!value) {
-                    lv2_log_trace(&self->logger,
-                        "patch:Set message with no value\n");
-                    continue;
-                } else if (value->type != uris->atom_Path) {
-                    lv2_log_trace(&self->logger,
-                        "patch:Set value is not a Path\n");
-                    continue;
-                }
-
-                // Json model file change, send it to the worker.
-                lv2_log_trace(&self->logger, "Queueing set message\n");
-                WorkerLoadMessage msg = { kWorkerLoad, {} };
-                std::memcpy(msg.path, value + 1, std::min(value->size, static_cast<uint32_t>(sizeof(msg.path) - 1u)));
-                self->schedule->schedule_work(self->schedule->handle, sizeof(msg), &msg);
-                self->loading = true;
-            } else {
-                lv2_log_trace(&self->logger,
-                    "Unknown object type %d\n", obj->body.otype);
-            }
-        } else {
-            lv2_log_trace(&self->logger,
-                "Unknown event type %d\n", ev->body.type);
-        }
-    }
-    /*++++++++ END READ ATOM MESSAGES ++++++++*/
-#endif
-#else
-#ifdef AIDADSP_CHANNELS
-    float model_index = controlsToModelIndex(*self->model_index, ctrls);
-#else
-    float model_index = *self->model_index;
-#endif
-
-    if (model_index != self->model_index_old) {
-        self->model_index_old = model_index;
-
-        // Json model file change, send it to the worker.
-        lv2_log_trace(&self->logger, "Queueing set message\n");
-        WorkerLoadMessage msg = { kWorkerLoad, static_cast<int>(model_index + 1.5f) }; // round to int + 1
-        self->schedule->schedule_work(self->schedule->handle, sizeof(msg), &msg);
-        self->loading = true;
-    }
-#endif
-
     // 0 samples means pre-run, nothing left for us to do
     if (n_samples == 0) {
+        //~ LOGD("0 samples");
         return;
     }
 
     // not enabled (bypass)
     if (!enabled) {
+        //~ LOGD("not enabled");
         if (self->out_1 != self->in)
             std::memcpy(self->out_1, self->in, sizeof(float)*n_samples);
-#if AIDADSP_COMMERCIAL && (AIDADSP_MODEL_DEFINE != SHOWCASE)
-        mod_license_run_silence(self->run_count, self->out_1, n_samples, 0);
-#endif
         return;
     }
 
@@ -624,12 +552,14 @@ void RtNeuralGeneric::run(LV2_Handle instance, uint32_t n_samples)
     } else {
         std::memcpy(self->out_1, self->in, sizeof(float)*n_samples);
     }
-    applyGainRamp(self->preGain, self->out_1, self->out_1, n_samples); // Pre-gain
+
+    //~ applyGainRamp(self->preGain, self->out_1, self->out_1, n_samples); // Pre-gain
     if(eq_position == 1.0f && eq_bypass == 0.0f) {
         applyToneControls(self->out_1, self->out_1, instance, n_samples); // Equalizer section
     }
     if (self->model != nullptr) {
         if (!net_bypass) {
+            //~ LOGD("apply model");
 #if AIDADSP_CONDITIONED_MODELS
             self->model->param1Coeff.setTargetValue(param1);
             self->model->param2Coeff.setTargetValue(param2);
@@ -640,8 +570,13 @@ void RtNeuralGeneric::run(LV2_Handle instance, uint32_t n_samples)
             }
 #endif
             applyModel(self->model, self->out_1, n_samples);
+        } else {
+            //~ LOGD("net bypass");
         }
+    } else {
+        //~ LOGD("model is null");
     }
+    
 #if AIDADSP_OPTIONAL_DCBLOCKER
     if (*self->dc_blocker_param == 1.0f)
 #endif
@@ -652,10 +587,8 @@ void RtNeuralGeneric::run(LV2_Handle instance, uint32_t n_samples)
         applyToneControls(self->out_1, self->out_1, instance, n_samples); // Equalizer section
     }
     self->masterGain.setTargetValue(self->loading ? 0.f : master);
+    //~ LOGD("[%d] %f %f", self->loading, master, self->masterGain.getTargetValue ());
     applyGainRamp(self->masterGain, self->out_1, self->out_1, n_samples); // Master volume
-#if AIDADSP_COMMERCIAL && (AIDADSP_MODEL_DEFINE != SHOWCASE)
-    mod_license_run_silence(self->run_count, self->out_1, n_samples, 0);
-#endif
     /*++++++++ END AUDIO DSP ++++++++*/
 }
 
@@ -970,22 +903,29 @@ DynamicModel* RtNeuralGeneric::loadModelFromPath(LV2_Log_Logger* logger, const c
     nlohmann::json model_json;
 
     try {
-        std::ifstream jsonStream(path, std::ifstream::binary);
-        jsonStream >> model_json;
+        //~ std::ifstream jsonStream(path, std::ifstream::binary);
+        //~ jsonStream >> model_json;
+        model_json = nlohmann::json::parse (path);
 
         /* Understand which model type to load */
         input_size = model_json["in_shape"].back().get<int>();
+        LOGD("got input size %d", input_size);
         if (input_size > MAX_INPUT_SIZE) {
+            LOGD("AIDADSP_CONDITIONED_MODELS");
             throw std::invalid_argument("Value for input_size not supported");
         }
 
         if (model_json["in_skip"].is_number()) {
             input_skip = model_json["in_skip"].get<int>();
-            if (input_skip > 1)
+            LOGD("input skip: %d", input_skip);
+            if (input_skip > 1) {
+                LOGD("Values for in_skip > 1 are not supported");
                 throw std::invalid_argument("Values for in_skip > 1 are not supported");
+            }
         }
         else {
             input_skip = 0;
+            LOGD("input_skip = 0;_");
         }
 
         if (model_json["in_gain"].is_number()) {
@@ -994,6 +934,8 @@ DynamicModel* RtNeuralGeneric::loadModelFromPath(LV2_Log_Logger* logger, const c
         else {
             input_gain = 1.0f;
         }
+        
+        LOGD("input_gain: %f", input_gain);
 
         if (model_json["out_gain"].is_number()) {
             output_gain = DB_CO(model_json["out_gain"].get<float>());
@@ -1002,6 +944,8 @@ DynamicModel* RtNeuralGeneric::loadModelFromPath(LV2_Log_Logger* logger, const c
             output_gain = 1.0f;
         }
 
+        LOGD("output gain: %f", output_gain);
+        
         if (model_json["metadata"]["samplerate"].is_number()) {
             model_samplerate = model_json["metadata"]["samplerate"].get<float>();
         }
@@ -1012,18 +956,21 @@ DynamicModel* RtNeuralGeneric::loadModelFromPath(LV2_Log_Logger* logger, const c
             model_samplerate = 48000.0f;
         }
 
-        lv2_log_note(logger, "Successfully loaded json file: %s\n", path);
+        LOGD("model sample rate: %f", model_samplerate);
+        LOGD("Successfully loaded json file: %s\n", path);
     }
     catch (const std::exception& e) {
-        lv2_log_error(logger, "Unable to load json file: %s\nError: %s\n", path, e.what());
+        LOGD("Unable to load json file: %s\nError: %s\n", path, e.what());
         return nullptr;
     }
 
     std::unique_ptr<DynamicModel> model = std::make_unique<DynamicModel>();
 
     try {
-        if (! custom_model_creator (model_json, model->variant))
+        if (! custom_model_creator (model_json, model->variant)) {
+            LOGD ("Unable to identify a known model architecture!");
             throw std::runtime_error ("Unable to identify a known model architecture!");
+        }
 
         std::visit (
             [&model_json] (auto&& custom_model)
@@ -1036,10 +983,10 @@ DynamicModel* RtNeuralGeneric::loadModelFromPath(LV2_Log_Logger* logger, const c
                 }
             },
             model->variant);
-        lv2_log_note(logger, "%s %d: mdl rst!\n", __func__, __LINE__);
+        LOGD("%s %d: mdl rst!\n", __func__, __LINE__);
     }
     catch (const std::exception& e) {
-        lv2_log_error(logger, "Error loading model: %s\n", e.what());
+        LOGD ("Error loading model: %s\n", e.what());
         return nullptr;
     }
 

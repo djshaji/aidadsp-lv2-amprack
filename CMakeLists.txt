@@ -4,6 +4,7 @@ project(aidadsp-lv2 VERSION 1.0.0)
 
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
 set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE}")
+set (CMAKE_SHARED_LINKER_FLAGS "-llog")
 
 option(GENERIC_AARCH64 "Use specific cxxflags and ldflags for a generic aarch64 machine" OFF)
 option(MPB_MOD_DUO_GCC_750 "Use specific cxxflags and ldflags for Mod Duo device using mod-plugin-builder with toolchain gcc 7.5.0" OFF)
