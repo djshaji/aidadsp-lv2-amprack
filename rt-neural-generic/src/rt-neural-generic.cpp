@@ -962,7 +962,11 @@ DynamicModel* RtNeuralGeneric::loadModelFromPath(LV2_Log_Logger* logger, const c
     catch (const std::exception& e) {
         LOGD("Unable to load json file: %s\nError: %s\n", path, e.what());
         return nullptr;
+    } catch (nlohmann::json::parse_error& e) {
+        LOGD ("cannot load json");
+        return nullptr;
     }
+
 
     std::unique_ptr<DynamicModel> model = std::make_unique<DynamicModel>();
 
