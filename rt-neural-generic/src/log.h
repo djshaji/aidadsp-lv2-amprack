@@ -16,9 +16,10 @@
  */
 #ifndef __SAMPLE_ANDROID_DEBUG_H__
 #define __SAMPLE_ANDROID_DEBUG_H__
+
+#ifdef __ANDROID__
 #include <android/log.h>
 
-#if 1
 #ifndef MODULE_NAME
 #define MODULE_NAME  __FILE_NAME__
 #endif
@@ -36,13 +37,16 @@
 #define ASSERT(cond, ...) if (!(cond)) {__android_log_assert(#cond, MODULE_NAME, __VA_ARGS__);}
 #else
 
-#define LOGV(...)
-#define LOGD(...)
-#define LOGI(...)
-#define LOGW(...)
-#define LOGE(...)
-#define LOGF(...)
+#define LOGI printf
+#define LOGD printf
+#define LOGW printf
+#define LOGE printf
+#define LOGF printf
 #define ASSERT(cond, ...)
+#define LOGV(arg) printf("!! [%s: %d] %s\n", __FILE__, __LINE__, arg) ;
+#define HERE printf("!! %s: %d\n", __FILE__, __LINE__) ;
+#define IN printf(">> %s\n", __PRETTY_FUNCTION__);
+#define OUT printf("<< %s \n", __PRETTY_FUNCTION__);
 
 #endif
 
